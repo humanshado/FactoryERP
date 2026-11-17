@@ -2,9 +2,11 @@
 // (coloured by the busiest work center they use), each material's projected balance, and what to order.
 import { run } from '../api.js';
 import { Card, Loading, PageHead, fmtDate, fmtMoney, fmtNum, fmtPct, signalChange, useData } from '../ui.jsx';
+import { useApp } from '../App.jsx';
 
 export default function Planning() {
   const [data, , error] = useData('/planning');
+  const { can } = useApp();
   if (!data) return <Loading error={error} />;
   const { weeks } = data;
   const create = async () => {
@@ -19,7 +21,7 @@ export default function Planning() {
   return (
     <div className="page">
       <PageHead title="Planning" sub={`Materials requirement planning · ${weeks.length} weeks from ${fmtDate(weeks[0], true)}`}>
-        <button className="btn btn-primary" disabled={!data.toOrder.length} onClick={create}>Create purchase orders</button>
+        {can('purchases.edit') && <button className="btn btn-primary" disabled={!data.toOrder.length} onClick={create}>Create purchase orders</button>}
       </PageHead>
 
       <div className="grid-2">

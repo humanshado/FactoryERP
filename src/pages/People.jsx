@@ -7,7 +7,8 @@ import { Card, Field, Input, fmtDate, fmtMoney2, fmtNum, signalChange, useData }
 import { useApp } from '../App.jsx';
 
 function TimeEntries({ emp }) {
-  const { today } = useApp();
+  const { today, can } = useApp();
+  const editable = can('time.edit');
   const [all] = useData('/timeEntries');
   const [orders] = useData('/orders');
   const [nw, setNw] = useState({ workDate: today, woNo: null, hours: 8, notes: '' });
@@ -24,6 +25,7 @@ function TimeEntries({ emp }) {
   const last30 = rows.filter((t) => t.workDate > new Date(Date.parse(today) - 30 * 864e5).toISOString().slice(0, 10)).reduce((s, t) => s + (t.hours || 0), 0);
   return (
     <Card title={`Time entries · ${fmtNum(last30)} h in the last 30 days`}>
+      {editable && (<>
       <div className="form-grid four">
         <Field label="Work date" required><Input f={{ key: 'workDate', type: 'date' }} value={nw.workDate} onChange={(v) => setNw({ ...nw, workDate: v })} /></Field>
         <Field label="WO No"><Input f={{ key: 'woNo', type: 'select', options: woNos, placeholder: 'none' }} value={nw.woNo} onChange={(v) => setNw({ ...nw, woNo: v })} /></Field>
@@ -31,6 +33,7 @@ function TimeEntries({ emp }) {
         <Field label="Notes"><Input f={{ key: 'notes' }} value={nw.notes} onChange={(v) => setNw({ ...nw, notes: v })} /></Field>
       </div>
       <div className="btn-row"><button className="btn btn-primary" onClick={add}>Add time entry</button></div>
+      </>)}
       <div className="table-wrap" style={{ maxHeight: 360 }}>
         <table className="table compact">
           <thead><tr><th>Work date</th><th>WO No</th><th className="num">Hours</th><th>Notes</th><th /></tr></thead>
@@ -41,7 +44,7 @@ function TimeEntries({ emp }) {
                 <td>{t.woNo && woId.has(t.woNo) ? <Link to={`/orders?id=${woId.get(t.woNo)}`}>{t.woNo}</Link> : t.woNo}</td>
                 <td className="num">{fmtNum(t.hours)}</td>
                 <td>{t.notes}</td>
-                <td><button className="icon-btn" onClick={() => del(t)} aria-label="Remove time entry">✕</button></td>
+                <td>{editable && <button className="icon-btn" onClick={() => del(t)} aria-label="Remove time entry">✕</button>}</td>
               </tr>
             ))}
             {!rows.length && <tr><td colSpan={5} className="empty">No time entries yet.</td></tr>}
@@ -65,7 +68,7 @@ export default function People() {
   ];
   return (
     <MasterPage
-      table="employees" title="People" sub="Employees and their hours" newLabel="New employee" nameOf={(r) => r.name}
+      table="employees" title="People" sub="Employees and their hours" newLabel="New employee" nameOf={(r) => r.name} perm="people.edit" archivable
       columns={[
         { key: 'name', label: 'Employee', render: (r) => <b>{r.name}</b> },
         { key: 'role', label: 'Role' },

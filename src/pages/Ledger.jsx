@@ -1,7 +1,8 @@
 // LEDGER: every amount of money in and out. Payments recorded on orders land here too.
 import { Link } from 'react-router-dom';
 import MasterPage from '../MasterPage.jsx';
-import { Badge, Kpi, fmtDate, fmtMoney, fmtMoney2, fmtMonth, useData } from '../ui.jsx';
+import { run } from '../api.js';
+import { Badge, Kpi, askText, fmtDate, fmtMoney, fmtMoney2, fmtMonth, signalChange, useData } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 
 export default function Ledger() {
@@ -21,6 +22,7 @@ export default function Ledger() {
     { key: 'reference', label: 'Reference', hint: 'An invoice or PO number counts as a payment on that order.' },
     { key: 'method', label: 'Method', type: 'select', options: settings.payMethods || [] },
     { key: 'notes', label: 'Notes', type: 'textarea', wide: true },
+    ...(d.void ? [{ key: 'voidReason', label: 'Void because', wide: true, readOnly: true }] : []),
   ];
   return (
     <>
@@ -38,15 +40,25 @@ export default function Ledger() {
         </div>
       )}
       <MasterPage
-        table="moneyEntries" title="Ledger" sub="Money in and out (cash basis)" newLabel="New entry"
+        table="moneyEntries" title="Ledger" sub="Money in and out (cash basis) · entries are voided, never deleted" newLabel="New entry"
+        perm="ledger.edit" deletable={false} readOnlyWhen={(r) => r.void}
+        recordActions={(r, { reload }) => !r.void && (
+          <button className="btn btn-ghost-danger" onClick={async () => {
+            const reason = await askText(`Void this ${fmtMoney2(r.amount)} entry? It stays on the Ledger, struck out, and leaves every total.`, { ok: 'Void', danger: true, required: true, placeholder: 'Why (e.g. duplicate, bounced, refunded)' });
+            if (reason && (await run('POST', `/moneyEntries/${r.id}/void`, { reason }))) {
+              await reload();
+              signalChange();
+            }
+          }}>Void</button>
+        )}
         nameOf={(r) => `${r.direction === 'In' ? 'Money in' : 'Money out'} · ${fmtMoney2(r.amount)}`}
         columns={[
           { key: 'entryDate', label: 'Date', render: (r) => fmtDate(r.entryDate, true) },
           { key: 'reference', label: 'Reference', render: (r) => (orderByNo.has(r.reference) ? <Link to={`/orders?id=${orderByNo.get(r.reference).id}`} onClick={(e) => e.stopPropagation()}>{r.reference}</Link> : r.reference) },
           { key: 'category', label: 'Category' },
           { key: 'party', label: 'Party' },
-          { key: 'direction', label: '', render: (r) => <Badge>{r.direction}</Badge> },
-          { key: 'amount', label: 'Amount', align: 'right', render: (r) => <span className={r.direction === 'Out' ? 'bad' : 'good'}>{r.direction === 'Out' ? '−' : '+'}{fmtMoney2(r.amount)}</span> },
+          { key: 'direction', label: '', render: (r) => (r.void ? <Badge tone="grey">Void</Badge> : <Badge>{r.direction}</Badge>), text: (r) => (r.void ? 'void' : r.direction) },
+          { key: 'amount', label: 'Amount', align: 'right', render: (r) => <span className={r.void ? 'voided' : r.direction === 'Out' ? 'bad' : 'good'}>{r.direction === 'Out' ? '−' : '+'}{fmtMoney2(r.amount)}</span> },
         ]}
         initialSort={{ key: 'entryDate', dir: 'desc' }}
         filters={{

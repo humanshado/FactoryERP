@@ -58,7 +58,7 @@ export function Customers() {
           <Stat label="Open orders (not shipped)" value={openOrders(c.name)} />
           <Stat label="Unpaid invoices" value={`${unpaid.length} · ${fmtMoney(unpaid.reduce((s, o) => s + (o.total || 0), 0))}`} />
           <Stat label="Open quotes" value={R.orders.filter((o) => o.party === c.name && o.type === 'Quote' && o.status === 'Open').length} />
-          <Stat label="Paid to date" value={fmtMoney(R.money.filter((m) => m.direction === 'In' && m.party === c.name).reduce((s, m) => s + (m.amount || 0), 0))} />
+          <Stat label="Paid to date" value={fmtMoney(R.money.filter((m) => !m.void && m.direction === 'In' && m.party === c.name).reduce((s, m) => s + (m.amount || 0), 0))} />
           <Stat label="Last invoice" value={last ? fmtDate(last, true) : 'none'} />
         </div>
       </Card>
@@ -66,7 +66,7 @@ export function Customers() {
   };
   return (
     <MasterPage
-      table="customers" title="Customers" sub="Who you sell to" newLabel="New customer" nameOf={(r) => r.name}
+      table="customers" title="Customers" sub="Who you sell to" newLabel="New customer" nameOf={(r) => r.name} perm="customers.edit" archivable
       columns={[
         { key: 'name', label: 'Customer', render: (r) => <b>{r.name}</b> },
         { key: 'contact', label: 'Contact' },
@@ -100,7 +100,7 @@ export function Suppliers() {
           <Stat label="Open purchase orders" value={pos.filter((o) => o.status === 'On order').length} />
           <Stat label="Received purchase orders" value={pos.filter((o) => o.status === 'Received').length} />
           <Stat label="Items from this supplier" value={mine.length} />
-          <Stat label="Paid to date" value={fmtMoney(R.money.filter((m) => m.direction === 'Out' && m.party === s.name).reduce((t, m) => t + (m.amount || 0), 0))} />
+          <Stat label="Paid to date" value={fmtMoney(R.money.filter((m) => !m.void && m.direction === 'Out' && m.party === s.name).reduce((t, m) => t + (m.amount || 0), 0))} />
           <Stat label="Last purchase order" value={last ? fmtDate(last, true) : 'none'} />
         </div>
         {mine.length > 0 && (
@@ -111,7 +111,7 @@ export function Suppliers() {
   };
   return (
     <MasterPage
-      table="suppliers" title="Suppliers" sub="Who you buy from" newLabel="New supplier" nameOf={(r) => r.name}
+      table="suppliers" title="Suppliers" sub="Who you buy from" newLabel="New supplier" nameOf={(r) => r.name} perm="suppliers.edit" archivable
       columns={[
         { key: 'name', label: 'Supplier', render: (r) => <b>{r.name}</b> },
         { key: 'contact', label: 'Contact' },

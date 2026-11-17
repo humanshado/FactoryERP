@@ -4,17 +4,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { run } from '../api.js';
 import {
-  Badge, Card, Chips, DataList, Field, Input, Loading, PageHead, SearchBox, askConfirm, fmtDate, fmtMoney2, fmtNum, signalChange, useData,
+  Badge, Card, Chips, DataList, Field, History, Input, Loading, Modal, PageHead, SearchBox, askConfirm, askText, fmtDate, fmtMoney2, fmtNum,
+  signalChange, useData,
 } from '../ui.jsx';
 import { useApp } from '../App.jsx';
+import { STATUSES } from '../../shared/engine.js';
+import { ORDER_PERM } from '../../shared/permissions.js';
 
 export const TYPES = ['Quote', 'Invoice', 'Work Order', 'Purchase Order'];
-export const STATUSES = {
-  Quote: ['Open', 'Accepted', 'Lost', 'Expired'],
-  Invoice: ['Ordered', 'In production', 'Unpaid', 'Part paid', 'Paid'],
-  'Work Order': ['Planned', 'Released', 'In progress', 'Done'],
-  'Purchase Order': ['On order', 'Received'],
-};
+const MOVE_LABEL = { receipt: 'Received', shipment: 'Shipped', production: 'Made', issue: 'Used' };
 export const LABELS = {
   Quote: { date: 'Quote date', due: 'Valid until', closed: null, party: 'Customer' },
   Invoice: { date: 'Invoice date', due: 'Due date', closed: 'Shipped', party: 'Customer' },
@@ -22,14 +20,14 @@ export const LABELS = {
   'Purchase Order': { date: 'Order date', due: 'Expected', closed: 'Received', party: 'Supplier' },
 };
 
-function NewMenu({ onPick }) {
+function NewMenu({ onPick, types }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="menu-wrap">
       <button className="btn btn-primary" onClick={() => setOpen((o) => !o)} aria-expanded={open}>+ New ▾</button>
       {open && (
         <div className="menu" onMouseLeave={() => setOpen(false)}>
-          {TYPES.map((t) => <button key={t} onClick={() => { setOpen(false); onPick(t); }}>{t}</button>)}
+          {types.map((t) => <button key={t} onClick={() => { setOpen(false); onPick(t); }}>{t}</button>)}
         </div>
       )}
     </div>
@@ -37,6 +35,8 @@ function NewMenu({ onPick }) {
 }
 
 export default function Orders() {
+  const { can } = useApp();
+  const newTypes = TYPES.filter((t) => can(ORDER_PERM[t]));
   const [orders, reloadList, error] = useData('/orders');
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState('');
@@ -70,7 +70,7 @@ export default function Orders() {
   return (
     <div className="page">
       <PageHead title="Orders" sub="Quotes, invoices, work orders and purchase orders">
-        <NewMenu onPick={create} />
+        {newTypes.length > 0 && <NewMenu onPick={create} types={newTypes} />}
       </PageHead>
       <div className="split split-wide">
         <Card className="list-card" pad={false}>
@@ -86,7 +86,7 @@ export default function Orders() {
         </Card>
         <div className="detail">
           {id ? <OrderDoc key={id} id={id} onChanged={reloadList} onOpen={(oid) => setQ({ id: oid })} onGone={() => setQ({ id: null })} />
-            : <div className="placeholder">Select an order in the list, or click <b>New</b>.</div>}
+            : <div className="placeholder">Select an order in the list{newTypes.length ? <>, or click <b>New</b></> : ''}.</div>}
         </div>
       </div>
     </div>
@@ -95,8 +95,9 @@ export default function Orders() {
 
 // ---------------------------------------------------------------- one order
 function OrderDoc({ id, onChanged, onOpen, onGone }) {
-  const { settings, today } = useApp();
+  const { settings, today, can } = useApp();
   const [doc, reload, error] = useData(`/orders/${id}`);
+  const [deliver, setDeliver] = useState(false);
   const [stock] = useData('/stock');
   const [customers] = useData('/customers');
   const [suppliers] = useData('/suppliers');
@@ -111,7 +112,12 @@ function OrderDoc({ id, onChanged, onOpen, onGone }) {
   if (!doc || !draft) return <Loading />;
   const o = doc.order;
   const L = LABELS[o.type];
+  const perm = can(ORDER_PERM[o.type]);
+  const editable = perm && o.status !== 'Cancelled';
   const dirty = JSON.stringify(draft) !== JSON.stringify(o);
+  const anyDelivered = doc.lines.some((l) => l.delivered > 0);
+  const cancellable = perm && o.status !== 'Cancelled' && !(o.type === 'Work Order' && o.status === 'Done')
+    && !(o.type === 'Purchase Order' && o.status === 'Received') && !(o.type === 'Invoice' && (doc.shipped || anyDelivered));
   const refresh = async () => {
     await reload();
     onChanged();
@@ -126,8 +132,8 @@ function OrderDoc({ id, onChanged, onOpen, onGone }) {
     return out;
   };
   const save = async () => {
-    const patch = {};
-    for (const k of Object.keys(draft)) if (draft[k] !== o[k]) patch[k] = draft[k];
+    const patch = { rev: o.rev };
+    for (const k of Object.keys(draft)) if (k !== 'rev' && draft[k] !== o[k]) patch[k] = draft[k];
     if (await run('PUT', `/orders/${o.id}`, patch)) refresh();
   };
   const remove = async () => {
@@ -138,10 +144,16 @@ function OrderDoc({ id, onChanged, onOpen, onGone }) {
       onGone();
     }
   };
+  const cancel = async () => {
+    const reason = await askText(`Cancel ${o.orderNo}? It stays on file, marked Cancelled${o.type === 'Purchase Order' && o.status === 'Part received' ? ' (what was received stays in stock)' : ''}.`,
+      { ok: 'Cancel order', cancel: 'Keep it', danger: true, placeholder: 'Why (kept in the notes)' });
+    if (reason !== null) await act('cancel', { reason });
+  };
 
-  const partyOptions = o.type === 'Purchase Order' ? (suppliers || []).map((s) => s.name)
-    : o.type === 'Work Order' ? items.filter((i) => i.type === 'Finished').map((i) => i.name)
-      : (customers || []).map((c) => c.name);
+  const live = (r) => !r.archived || r.name === o.party;
+  const partyOptions = o.type === 'Purchase Order' ? (suppliers || []).filter(live).map((s) => s.name)
+    : o.type === 'Work Order' ? items.filter((i) => i.type === 'Finished' && live(i)).map((i) => i.name)
+      : (customers || []).filter(live).map((c) => c.name);
   const set = (k) => (v) => setDraft({ ...draft, [k]: v });
   const P = doc.party;
   const addr = P && (o.type === 'Work Order'
@@ -159,13 +171,16 @@ function OrderDoc({ id, onChanged, onOpen, onGone }) {
             {o.priority === 'Rush' && <Badge>Rush</Badge>}
           </div>
           <div className="btn-row">
-            <button className="btn btn-ghost-danger" onClick={remove}>Delete</button>
+            {perm && doc.deletable && <button className="btn btn-ghost-danger" onClick={remove} title="A draft: nothing posted yet">Delete</button>}
+            {cancellable && !doc.deletable && <button className="btn btn-ghost-danger" onClick={cancel}>Cancel order</button>}
             <Link className="btn" to={`/orders/${o.id}/print`} target="_blank">Print / PDF</Link>
-            <button className="btn btn-primary" disabled={!dirty} onClick={save}>Save</button>
+            {perm && <button className="btn btn-primary" disabled={!dirty} onClick={save}>Save</button>}
           </div>
         </div>
+        {o.status === 'Cancelled' && <div className="banner">Cancelled{o.closedDate ? ` on ${fmtDate(o.closedDate, true)}` : ''}. It stays on file; only its notes can change.</div>}
+        {!perm && <div className="banner banner-info">Read only: your role does not change {o.type.toLowerCase()}s.</div>}
 
-        <div className="doc-head">
+        <fieldset className="plain doc-head" disabled={!editable}>
           <div className="doc-party">
             <Field label={L.party} required>
               <Input f={{ key: 'party', type: 'select', options: partyOptions, placeholder: `Pick the ${L.party.toLowerCase()}` }} value={draft.party} onChange={set('party')} />
@@ -183,9 +198,9 @@ function OrderDoc({ id, onChanged, onOpen, onGone }) {
             <Field label="Status" required><Input f={{ key: 'status', type: 'select', options: STATUSES[o.type] }} value={draft.status} onChange={set('status')} /></Field>
             <Field label={L.date} required><Input f={{ key: 'orderDate', type: 'date' }} value={draft.orderDate} onChange={set('orderDate')} /></Field>
             <Field label={L.due}><Input f={{ key: 'dueDate', type: 'date' }} value={draft.dueDate} onChange={set('dueDate')} /></Field>
-            {L.closed && <Field label={L.closed}><Input f={{ key: 'closedDate', type: 'date' }} value={draft.closedDate} onChange={set('closedDate')} /></Field>}
+            {L.closed && <Field label={o.status === 'Cancelled' ? 'Cancelled' : L.closed}><Input f={{ key: 'closedDate', type: 'date', readOnly: true }} value={draft.closedDate} onChange={set('closedDate')} /></Field>}
             {(o.type === 'Invoice' || o.type === 'Purchase Order') && (
-              <Field label="Paid in full"><Input f={{ key: 'paidDate', type: 'date' }} value={draft.paidDate} onChange={set('paidDate')} /></Field>
+              <Field label="Paid in full"><Input f={{ key: 'paidDate', type: 'date', readOnly: true }} value={draft.paidDate} onChange={set('paidDate')} /></Field>
             )}
             <Field label="From">
               <div className="from">
@@ -194,14 +209,14 @@ function OrderDoc({ id, onChanged, onOpen, onGone }) {
               </div>
             </Field>
           </div>
-        </div>
+        </fieldset>
 
         {o.type === 'Work Order'
-          ? <Operations doc={doc} settings={settings} refresh={refresh} />
-          : <Lines doc={doc} items={items} refresh={refresh} />}
+          ? <Operations doc={doc} settings={settings} refresh={refresh} locked={!can('workorders.edit') || ['Done', 'Cancelled'].includes(o.status)} />
+          : <Lines doc={doc} items={items} refresh={refresh} locked={doc.locked || !editable} />}
 
         <div className="doc-foot">
-          <Field label="Notes" wide><Input f={{ key: 'notes', type: 'textarea', rows: 2 }} value={draft.notes} onChange={set('notes')} /></Field>
+          <Field label="Notes" wide><Input f={{ key: 'notes', type: 'textarea', rows: 2 }} value={draft.notes} onChange={set('notes')} disabled={!perm} /></Field>
           {o.type !== 'Work Order' ? (
             <div className="totals">
               <div><span>Subtotal</span><b>{fmtMoney2(doc.totals.subtotal)}</b></div>
@@ -213,7 +228,7 @@ function OrderDoc({ id, onChanged, onOpen, onGone }) {
                   <div className="grand"><span>Balance</span><b className={doc.totals.balance > 0.004 ? 'bad' : ''}>{fmtMoney2(doc.totals.balance)}</b></div>
                 </>
               )}
-              <TaxEdit draft={draft} setDraft={setDraft} />
+              {editable && <TaxEdit draft={draft} setDraft={setDraft} />}
             </div>
           ) : (
             <div className="totals">
@@ -224,7 +239,11 @@ function OrderDoc({ id, onChanged, onOpen, onGone }) {
         </div>
       </Card>
 
-      <NextStep doc={doc} act={act} today={today} settings={settings} onOpen={onOpen} />
+      {o.status !== 'Cancelled' && <NextStep doc={doc} act={act} today={today} settings={settings} onOpen={onOpen} can={can} onDeliver={() => setDeliver(true)} />}
+      {o.status === 'Cancelled' && doc.related.length > 0 && <Related doc={doc} onOpen={onOpen} />}
+      {doc.moves.length > 0 && <OrderMoves moves={doc.moves} />}
+      {can('audit.view') && <History key={`${o.id}-${o.rev}`} table="orders" id={o.id} />}
+      {deliver && <DeliverDialog doc={doc} today={today} onClose={() => setDeliver(false)} act={act} />}
     </>
   );
 }
@@ -242,10 +261,11 @@ function TaxEdit({ draft, setDraft }) {
 }
 
 // ---------------------------------------------------------------- lines (quotes, invoices, purchase orders)
-function Lines({ doc, items, refresh }) {
+function Lines({ doc, items, refresh, locked }) {
   const o = doc.order;
   const isPO = o.type === 'Purchase Order';
-  const pick = isPO ? items.filter((i) => i.type !== 'Finished') : items;
+  const pick = (isPO ? items.filter((i) => i.type !== 'Finished') : items).filter((i) => !i.archived);
+  const dlv = o.type === 'Invoice' ? 'Shipped' : isPO ? 'Received' : null;
   const priceOf = (name) => {
     const it = items.find((i) => i.name === name);
     return it ? (isPO ? it.unitCost : it.price) : null;
@@ -263,11 +283,11 @@ function Lines({ doc, items, refresh }) {
     <div className="lines">
       <table className="table lines-table order-lines">
         <thead>
-          <tr><th>Item</th><th>Description</th><th className="num">Qty</th><th className="num">{isPO ? 'Unit cost' : 'Price'}</th><th className="num">Line total</th><th /></tr>
+          <tr><th>Item</th><th>Description</th><th className="num">Qty</th>{dlv && <th className="num">{dlv}</th>}<th className="num">{isPO ? 'Unit cost' : 'Price'}</th><th className="num">Line total</th><th /></tr>
         </thead>
         <tbody>
-          {doc.lines.map((l) => <LineRow key={l.id} line={l} pick={pick} items={items} priceOf={priceOf} locked={doc.locked} refresh={refresh} />)}
-          {!doc.locked && (
+          {doc.lines.map((l) => <LineRow key={`${l.id}|${l.rev}`} line={l} pick={pick} items={items} priceOf={priceOf} locked={locked} refresh={refresh} dlv={dlv} />)}
+          {!locked && (
             <tr className="new-line">
               <td>
                 <select value={nw.item || ''} aria-label="New line item" onChange={(e) => {
@@ -281,6 +301,7 @@ function Lines({ doc, items, refresh }) {
               </td>
               <td><input value={nw.description || ''} onChange={(e) => setNw({ ...nw, description: e.target.value })} aria-label="Description" /></td>
               <td><input type="number" className="num" value={nw.qty ?? ''} onChange={(e) => setNw({ ...nw, qty: e.target.value === '' ? null : Number(e.target.value) })} aria-label="Qty" /></td>
+              {dlv && <td />}
               <td><input type="number" className="num" step="any" value={nw.price ?? ''} onChange={(e) => setNw({ ...nw, price: e.target.value === '' ? null : Number(e.target.value) })} aria-label="Price" /></td>
               <td className="num muted">{nw.item ? fmtMoney2((nw.qty || 0) * (nw.price || 0)) : ''}</td>
               <td><button className="btn btn-small btn-primary" disabled={!nw.item} onClick={add}>Add</button></td>
@@ -290,18 +311,18 @@ function Lines({ doc, items, refresh }) {
       </table>
       <div className="lines-note muted">
         {doc.lines.length} line{doc.lines.length === 1 ? '' : 's'}
-        {doc.locked && ` · locked: ${o.status.toLowerCase()}`}
+        {locked && doc.locked && ` · locked: ${o.status.toLowerCase()}`}
       </div>
     </div>
   );
 }
 
-function LineRow({ line, pick, items, priceOf, locked, refresh }) {
+function LineRow({ line, pick, items, priceOf, locked, refresh, dlv }) {
   const [v, setV] = useState(line);
   useEffect(() => setV(line), [line]);
   const commit = async (next) => {
     const changed = ['item', 'description', 'qty', 'price'].some((k) => next[k] !== line[k]);
-    if (changed && (await run('PUT', `/orderLines/${line.id}`, next))) refresh();
+    if (changed && (await run('PUT', `/orderLines/${line.id}`, { ...next, rev: line.rev }))) refresh();
   };
   const del = async () => {
     if (await run('DELETE', `/orderLines/${line.id}`)) refresh();
@@ -310,6 +331,7 @@ function LineRow({ line, pick, items, priceOf, locked, refresh }) {
     return (
       <tr>
         <td>{line.item}</td><td>{line.description}</td><td className="num">{fmtNum(line.qty)}</td>
+        {dlv && <td className={`num ${line.delivered > 0 && line.delivered < line.qty ? 'warn-txt' : ''}`}>{fmtNum(line.delivered || 0)}</td>}
         <td className="num">{fmtMoney2(line.price)}</td><td className="num">{fmtMoney2((line.qty || 0) * (line.price || 0))}</td><td />
       </tr>
     );
@@ -330,6 +352,7 @@ function LineRow({ line, pick, items, priceOf, locked, refresh }) {
       </td>
       <td><input value={v.description || ''} onChange={(e) => setV({ ...v, description: e.target.value })} onBlur={() => commit(v)} aria-label="Description" /></td>
       <td><input type="number" className="num" value={v.qty ?? ''} onChange={(e) => setV({ ...v, qty: e.target.value === '' ? null : Number(e.target.value) })} onBlur={() => commit(v)} aria-label="Qty" /></td>
+      {dlv && <td className="num">{fmtNum(line.delivered || 0)}</td>}
       <td><input type="number" className="num" step="any" value={v.price ?? ''} onChange={(e) => setV({ ...v, price: e.target.value === '' ? null : Number(e.target.value) })} onBlur={() => commit(v)} aria-label="Price" /></td>
       <td className="num">{fmtMoney2((v.qty || 0) * (v.price || 0))}</td>
       <td><button className="icon-btn" title="Remove line" aria-label="Remove line" onClick={del}>✕</button></td>
@@ -338,7 +361,7 @@ function LineRow({ line, pick, items, priceOf, locked, refresh }) {
 }
 
 // ---------------------------------------------------------------- operations (work orders)
-function Operations({ doc, settings, refresh }) {
+function Operations({ doc, settings, refresh, locked }) {
   const wcs = (settings.workCenters || []).map((w) => w.name);
   const save = async (op, patch) => {
     if (await run('PUT', `/operations/${op.id}`, patch)) refresh();
@@ -351,7 +374,7 @@ function Operations({ doc, settings, refresh }) {
     if (await run('DELETE', `/operations/${op.id}`)) refresh();
   };
   return (
-    <div className="lines">
+    <fieldset className="plain lines" disabled={locked}>
       <table className="table lines-table">
         <thead><tr><th>#</th><th>Work center</th><th>Start</th><th className="num">Days</th><th className="num">Hours</th><th>Done</th><th /></tr></thead>
         <tbody>
@@ -368,7 +391,7 @@ function Operations({ doc, settings, refresh }) {
               <td><input type="number" className="num" min="1" defaultValue={op.days ?? ''} onBlur={(e) => Number(e.target.value) !== op.days && save(op, { days: Number(e.target.value) })} aria-label="Days" /></td>
               <td><input type="number" className="num" step="any" defaultValue={op.hours ?? ''} onBlur={(e) => Number(e.target.value) !== op.hours && save(op, { hours: Number(e.target.value) })} aria-label="Hours" /></td>
               <td><input type="checkbox" checked={!!op.done} onChange={(e) => save(op, { done: e.target.checked })} aria-label="Done" /></td>
-              <td><button className="icon-btn" title="Remove operation" aria-label="Remove operation" onClick={() => del(op)}>✕</button></td>
+              <td>{!locked && <button className="icon-btn" title="Remove operation" aria-label="Remove operation" onClick={() => del(op)}>✕</button>}</td>
             </tr>
           ))}
           {!doc.operations.length && <tr><td colSpan={7} className="empty">No operations yet: Schedule makes them from the product's routing.</td></tr>}
@@ -376,14 +399,14 @@ function Operations({ doc, settings, refresh }) {
       </table>
       <div className="lines-note muted">
         {doc.operations.length} operations · from the routing; move them on the Floor
-        <button className="link small" onClick={add}>+ add an operation</button>
+        {!locked && <button className="link small" onClick={add}>+ add an operation</button>}
       </div>
-    </div>
+    </fieldset>
   );
 }
 
 // ---------------------------------------------------------------- NEXT STEP
-function NextStep({ doc, act, today, settings, onOpen }) {
+function NextStep({ doc, act, today, settings, onOpen, can, onDeliver }) {
   const o = doc.order;
   const [pay, setPay] = useState({ amount: null, date: today, method: (settings.payMethods || [])[0] || 'Bank transfer' });
   const steps = useMemo(() => {
@@ -394,18 +417,20 @@ function NextStep({ doc, act, today, settings, onOpen }) {
       s.push({ a: 'make-work-orders', l: 'Make work orders', hint: 'One work order per product you make, with operations from its routing.' });
     } else if (o.type === 'Invoice') {
       if (!doc.shipped && !doc.workOrders.length) s.push({ a: 'make-work-orders', l: 'Make work orders', hint: 'One work order per product you make on this invoice.' });
-      if (!doc.shipped) s.push({ a: 'ship', l: 'Ship now', hint: 'Ships it today (stock leaves); status follows the payments.' });
+      if (!doc.shipped) s.push({ a: 'ship', l: st === 'Part shipped' ? 'Ship the rest…' : 'Ship…', hint: 'All or part of each line; the stock leaves. Shipped in full, its status follows the payments.', dialog: true });
     } else if (o.type === 'Work Order') {
       s.push({ a: 'schedule', l: 'Schedule', hint: 'Operations from the routing (if none yet), then the Floor.' });
       if (st === 'Planned') s.push({ a: 'release', l: 'Release', hint: 'Checks the materials.' });
       if (st === 'Planned' || st === 'Released') s.push({ a: 'start', l: 'Start' });
       if (st !== 'Done') s.push({ a: 'complete', l: 'Complete', hint: 'Finished goods in, materials out, hours logged.' });
     } else if (o.type === 'Purchase Order' && st !== 'Received') {
-      s.push({ a: 'receive', l: 'Receive', hint: 'The stock comes in today.' });
+      s.push({ a: 'receive', l: st === 'Part received' ? 'Receive the rest…' : 'Receive…', hint: 'All or part of each line; the stock comes in.', dialog: true });
     }
-    return s;
-  }, [o, doc]);
-  const payable = o.type === 'Invoice' || o.type === 'Purchase Order';
+    const need = { 'make-invoice': 'invoices.edit', 'make-work-orders': 'workorders.edit', schedule: 'workorders.edit', release: 'workorders.edit', start: 'workorders.edit', complete: 'workorders.edit', ship: 'orders.ship', receive: 'orders.receive' };
+    return s.filter((x) => can(need[x.a]));
+  }, [o, doc, can]);
+  const payable = (o.type === 'Invoice' || o.type === 'Purchase Order') && can('payments.record');
+  const paidList = (o.type === 'Invoice' || o.type === 'Purchase Order') && doc.payments.length > 0;
   return (
     <Card title="Next step">
       {doc.waitingFor && <div className="alert">Waiting for material: <b>{doc.waitingFor}</b>. Planning › Create purchase orders orders what is missing.</div>}
@@ -416,7 +441,7 @@ function NextStep({ doc, act, today, settings, onOpen }) {
       )}
       <div className="steps">
         {steps.map((s) => (
-          <button key={s.a} className="step" onClick={() => act(s.a)}>
+          <button key={s.a} className="step" onClick={() => (s.dialog ? onDeliver() : act(s.a))}>
             <b>{s.l}</b>
             {s.hint && <span>{s.hint}</span>}
           </button>
@@ -440,27 +465,102 @@ function NextStep({ doc, act, today, settings, onOpen }) {
           <p className="muted small">{o.type === 'Invoice'
             ? 'Adds a Money In row on the Ledger with the invoice number: an invoice can be paid in parts. Paid before it ships, it is a deposit.'
             : 'Adds a Money Out row (Supplier payment) with the PO number.'}</p>
-          {doc.payments.length > 0 && (
-            <table className="table compact">
-              <tbody>
-                {doc.payments.map((p) => (
-                  <tr key={p.id}><td>{fmtDate(p.entryDate, true)}</td><td>{p.method}</td><td className="num">{fmtMoney2(p.amount)}</td></tr>
-                ))}
-              </tbody>
-            </table>
-          )}
         </div>
       )}
-      {doc.related.length > 0 && (
-        <div className="related">
-          <h3>Related</h3>
-          {doc.related.map((r) => (
-            <a key={r.id} className="rel" onClick={() => onOpen(r.id)}>
-              <span>{r.orderNo}</span><span className="muted">{r.type}</span><Badge>{r.status}</Badge>
-            </a>
-          ))}
-        </div>
+      {paidList && (
+        <>
+          <h3>Payments</h3>
+          <div className="table-wrap">
+          <table className="table compact">
+            <tbody>
+              {doc.payments.map((p) => (
+                <tr key={p.id} className={p.void ? 'voided-row' : ''}>
+                  <td>{fmtDate(p.entryDate, true)}</td><td>{p.method}</td>
+                  <td>{p.void ? <span className="badge badge-grey" title={p.voidReason}>Void</span> : ''}</td>
+                  <td className={`num ${p.void ? 'voided' : ''}`}>{fmtMoney2(p.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          </div>
+        </>
       )}
+      {doc.related.length > 0 && <Related doc={doc} onOpen={onOpen} bare />}
     </Card>
+  );
+}
+
+function Related({ doc, onOpen, bare }) {
+  const body = (
+    <div className="related">
+      {bare && <h3>Related</h3>}
+      {doc.related.map((r) => (
+        <a key={r.id} className="rel" onClick={() => onOpen(r.id)}>
+          <span>{r.orderNo}</span><span className="muted">{r.type}</span><Badge>{r.status}</Badge>
+        </a>
+      ))}
+    </div>
+  );
+  return bare ? body : <Card title="Related">{body}</Card>;
+}
+
+function OrderMoves({ moves }) {
+  return (
+    <Card title="Stock movements" pad={false}>
+      <div className="table-wrap">
+      <table className="table compact">
+        <tbody>
+          {moves.map((m) => (
+            <tr key={m.id}>
+              <td className="nowrap">{fmtDate(m.moveDate, true)}</td><td>{MOVE_LABEL[m.type] || m.type}</td><td>{m.item}</td>
+              <td className={`num ${m.qty < 0 ? 'bad' : 'good'}`}>{m.qty > 0 ? '+' : ''}{fmtNum(m.qty, 4)}</td><td className="muted small">{m.createdBy}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      </div>
+    </Card>
+  );
+}
+
+/** Receive (purchase order) or Ship (invoice): all or part of each line */
+function DeliverDialog({ doc, today, onClose, act }) {
+  const o = doc.order;
+  const isPO = o.type === 'Purchase Order';
+  const open = doc.lines.filter((l) => (l.qty || 0) - (l.delivered || 0) > 1e-9);
+  const [q, setQ] = useState(() => Object.fromEntries(open.map((l) => [l.id, (l.qty || 0) - (l.delivered || 0)])));
+  const [date, setDate] = useState(today);
+  const total = Object.values(q).reduce((s, v) => s + (Number(v) || 0), 0);
+  const submit = async () => {
+    const lines = open.map((l) => ({ lineId: l.id, qty: Number(q[l.id]) || 0 })).filter((l) => l.qty > 0);
+    if (await act(isPO ? 'receive' : 'ship', { lines, date })) onClose();
+  };
+  return (
+    <Modal title={`${isPO ? 'Receive' : 'Ship'} · ${o.orderNo}`} onClose={onClose} wide>
+      {!open.length ? <p>Nothing left to {isPO ? 'receive' : 'ship'}.</p> : (
+        <table className="table compact">
+          <thead><tr><th>Item</th><th className="num">Ordered</th><th className="num">{isPO ? 'Received' : 'Shipped'} so far</th><th className="num">{isPO ? 'Receive now' : 'Ship now'}</th></tr></thead>
+          <tbody>
+            {open.map((l) => (
+              <tr key={l.id}>
+                <td>{l.item}</td><td className="num">{fmtNum(l.qty)}</td><td className="num">{fmtNum(l.delivered || 0)}</td>
+                <td className="num"><input type="number" step="any" min="0" className="num count-input" value={q[l.id] ?? ''} aria-label={`${l.item} quantity`}
+                  onChange={(e) => setQ({ ...q, [l.id]: e.target.value })} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="form-grid">
+        <Field label={isPO ? 'Received on' : 'Shipped on'}><Input f={{ key: 'date', type: 'date' }} value={date} onChange={setDate} /></Field>
+      </div>
+      <p className="muted small">{isPO
+        ? 'Less than ordered leaves the PO Part received; the rest stays on order (or cancel it).'
+        : 'Less than ordered leaves the invoice Part shipped. Shipped in full, it becomes Unpaid / Part paid / Paid from its payments.'}</p>
+      <div className="modal-actions">
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" disabled={!total} onClick={submit}>{isPO ? 'Receive' : 'Ship'}</button>
+      </div>
+    </Modal>
   );
 }

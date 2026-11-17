@@ -1,20 +1,26 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { NavLink, Route, Routes, useLocation } from 'react-router-dom';
-import { ConfirmHost, Loading, Toasts, setAppSettings, useData } from './ui.jsx';
+import { api, run, setOnUnauthorized } from './api.js';
+import { ConfirmHost, Loading, Toasts, setAppSettings, setDataUnauthorized, useData } from './ui.jsx';
+import { ROLES, can as canDo } from '../shared/permissions.js';
 import Floor from './pages/Floor.jsx';
 import Pipeline from './pages/Pipeline.jsx';
 import Planning from './pages/Planning.jsx';
 import Orders from './pages/Orders.jsx';
 import OrderPrint from './pages/OrderPrint.jsx';
 import Stock from './pages/Stock.jsx';
+import StockCount from './pages/StockCount.jsx';
 import { Customers, Suppliers } from './pages/Parties.jsx';
 import Ledger from './pages/Ledger.jsx';
 import People from './pages/People.jsx';
 import Reports from './pages/Reports.jsx';
 import Admin from './pages/Admin.jsx';
+import Users from './pages/Users.jsx';
+import Audit from './pages/Audit.jsx';
+import { ChangePassword, Login, Setup } from './pages/Login.jsx';
 
 const AppCtx = createContext(null);
-/** { settings, today, reload } */
+/** { settings, today, reload, user, can(perm) } */
 export const useApp = () => useContext(AppCtx);
 
 const NAV = [
@@ -33,6 +39,8 @@ const NAV = [
   ] },
   { group: 'Look back', items: [
     { to: '/reports', label: 'Reports', icon: 'M4 20V10m6 10V4m6 16v-7m4 7H2' },
+    { to: '/audit', label: 'Audit log', icon: 'M12 8v5l3 2M12 21a9 9 0 100-18 9 9 0 000 18z', perm: 'audit.view' },
+    { to: '/users', label: 'Users', icon: 'M16 11a3 3 0 100-6 3 3 0 000 6zM8 11a3 3 0 100-6 3 3 0 000 6zM2 20c0-3 3-5 6-5s6 2 6 5M14 15c3 0 8 1 8 5', perm: 'users.manage' },
     { to: '/admin', label: 'Admin', icon: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19 12l2-1-1-3-2 .2-1.3-1.5.4-2-3-1-1 1.8h-2L10 3.7l-3 1 .4 2L6 8.2 4 8 3 11l2 1v0l-2 1 1 3 2-.2 1.3 1.5-.4 2 3 1 1-1.8h2l1 1.8 3-1-.4-2 1.4-1.5 2 .2 1-3z' },
   ] },
 ];
@@ -45,7 +53,8 @@ function Icon({ d }) {
   );
 }
 
-function Rail({ settings, open, onClose }) {
+function Rail({ settings, user, can, open, onClose, onSignOut, onPassword }) {
+  const roles = (user.roles || []).map((r) => ROLES[r]?.label || r).join(', ');
   return (
     <aside className={`rail ${open ? 'open' : ''}`}>
       <div className="brand">
@@ -59,7 +68,7 @@ function Rail({ settings, open, onClose }) {
         {NAV.map((g) => (
           <div key={g.group} className="nav-group">
             <div className="nav-title">{g.group}</div>
-            {g.items.map((it) => (
+            {g.items.filter((it) => !it.perm || can(it.perm)).map((it) => (
               <NavLink key={it.to} to={it.to} end={it.to === '/'} className="nav-link" onClick={onClose}>
                 <Icon d={it.icon} />
                 <span>{it.label}</span>
@@ -68,26 +77,41 @@ function Rail({ settings, open, onClose }) {
           </div>
         ))}
       </nav>
-      {String(settings.sampleMode).toUpperCase() === 'YES' && <div className="sample-pill" title="Sample data: Admin > Data to start your own">SAMPLE DATA</div>}
+      <div className="rail-foot">
+        {String(settings.sampleMode).toUpperCase() === 'YES' && <div className="sample-pill" title="Sample data: Admin > Data to start your own">SAMPLE DATA</div>}
+        <div className="me">
+          <div className="me-avatar" aria-hidden="true">{(user.name || user.username).slice(0, 1).toUpperCase()}</div>
+          <div className="me-txt">
+            <div className="me-name">{user.name || user.username}</div>
+            <div className="me-role">{roles}</div>
+          </div>
+        </div>
+        <div className="me-actions">
+          <button onClick={onPassword}>Password</button>
+          <button onClick={onSignOut}>Sign out</button>
+        </div>
+      </div>
     </aside>
   );
 }
 
-export default function App() {
+function Shell({ user, onSignOut }) {
   const [boot, reload, error] = useData('/bootstrap');
   const [menu, setMenu] = useState(false);
+  const [pw, setPw] = useState(false);
   const loc = useLocation();
   useEffect(() => setMenu(false), [loc.pathname]);
+  const can = useCallback((perm) => canDo(user, perm), [user]);
   if (!boot) return <Loading error={error && `Cannot reach the FactoryERP server: ${error}`} />;
   setAppSettings(boot.settings);
   const printing = /\/print$/.test(loc.pathname);
   return (
-    <AppCtx.Provider value={{ settings: boot.settings, today: boot.today, reload }}>
+    <AppCtx.Provider value={{ settings: boot.settings, today: boot.today, reload, user, can, database: boot.database }}>
       {printing ? (
         <Routes><Route path="/orders/:id/print" element={<OrderPrint />} /></Routes>
       ) : (
         <div className="shell">
-          <Rail settings={boot.settings} open={menu} onClose={() => setMenu(false)} />
+          <Rail settings={boot.settings} user={user} can={can} open={menu} onClose={() => setMenu(false)} onSignOut={onSignOut} onPassword={() => setPw(true)} />
           {menu && <div className="rail-back" onClick={() => setMenu(false)} />}
           <main className="main">
             <button className="menu-btn" onClick={() => setMenu(true)} aria-label="Open menu">☰ FactoryERP</button>
@@ -97,19 +121,55 @@ export default function App() {
               <Route path="/planning" element={<Planning />} />
               <Route path="/orders" element={<Orders />} />
               <Route path="/stock" element={<Stock />} />
+              <Route path="/stock/count" element={<StockCount />} />
               <Route path="/customers" element={<Customers />} />
               <Route path="/suppliers" element={<Suppliers />} />
               <Route path="/ledger" element={<Ledger />} />
               <Route path="/people" element={<People />} />
               <Route path="/reports" element={<Reports />} />
+              <Route path="/audit" element={<Audit />} />
+              <Route path="/users" element={<Users />} />
               <Route path="/admin" element={<Admin />} />
               <Route path="*" element={<Floor />} />
             </Routes>
           </main>
         </div>
       )}
+      {pw && <ChangePassword onClose={() => setPw(false)} />}
+    </AppCtx.Provider>
+  );
+}
+
+export default function App() {
+  const [auth, setAuth] = useState(null);
+  const [error, setError] = useState(null);
+  const load = useCallback(async () => {
+    try {
+      setAuth(await api('GET', '/auth/me'));
+      setError(null);
+    } catch (e) {
+      setError(e.message);
+    }
+  }, []);
+  useEffect(() => {
+    load();
+    setOnUnauthorized(load);
+    setDataUnauthorized(load);
+  }, [load]);
+  const signOut = async () => {
+    await run('POST', '/auth/logout');
+    load();
+  };
+  let body;
+  if (!auth) body = <Loading error={error && `Cannot reach the FactoryERP server: ${error}`} />;
+  else if (auth.setupNeeded) body = <Setup onDone={load} />;
+  else if (!auth.user) body = <Login onDone={load} />;
+  else body = <Shell key={auth.user.id} user={auth.user} onSignOut={signOut} />;
+  return (
+    <>
+      {body}
       <Toasts />
       <ConfirmHost />
-    </AppCtx.Provider>
+    </>
   );
 }

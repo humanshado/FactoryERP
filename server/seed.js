@@ -4,7 +4,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SCHEMA, Store, TABLES } from './db.js';
+import { Store, TABLES } from './db.js';
+import { migrate } from './migrate.js';
 import { addDays, diffDays, todayIso } from '../shared/dates.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -17,56 +18,65 @@ export const DEFAULT_SETTINGS = {
   currency: '$', sampleMode: 'No', sampleAnchor: null, workCenters: [], itemCategories: [], units: ['each'], payMethods: ['Bank transfer'],
   itemTypes: ['Raw', 'Finished', 'Packaging', 'Consumable', 'Perishable'],
   moneyCategories: [{ name: 'Customer payment', direction: 'In' }, { name: 'Supplier payment', direction: 'Out' }], roles: [],
+  adjustReasons: ['Damaged', 'Lost', 'Found', 'Scrap', 'Correction', 'Other'],
 };
 
-export function loadSeed(store, seed) {
-  store.tx(() => {
-    store.wipe();
-    for (const t of TABLES) for (const rec of seed[t] || []) store.insert(t, rec);
-    store.setSettings({ ...DEFAULT_SETTINGS, ...(seed.settings || {}) });
+export const readSeed = () => JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'));
+
+/** Replace every business record with a data set (a sample or a backup). Users and the audit log stay. */
+export async function loadData(store, data, what = 'Sample data loaded') {
+  await store.tx(async () => {
+    await store.wipe();
+    for (const t of TABLES) for (const rec of data[t] || []) await store.insert(t, rec, { audit: false });
+    await store.setSettings({ ...DEFAULT_SETTINGS, ...(data.settings || {}) }, { audit: false });
+    await migrate(store);
+    await store.audit({ action: 'load', summary: what });
   });
 }
 
-export function rollForward(store, today = todayIso()) {
-  const s = store.getSettings();
+export async function startEmpty(store) {
+  await store.tx(async () => {
+    await store.wipe();
+    await store.setSettings(DEFAULT_SETTINGS, { audit: false });
+    await store.audit({ action: 'load', summary: 'Started an empty company' });
+  });
+}
+
+export async function rollForward(store, today = todayIso()) {
+  const s = await store.getSettings();
   if (String(s.sampleMode).toUpperCase() !== 'YES' || !s.sampleAnchor) return 0;
   const shift = 7 * Math.floor(diffDays(today, s.sampleAnchor) / 7);
   if (shift <= 0) return 0;
-  store.tx(() => {
-    for (const [t, fields] of Object.entries(SCHEMA)) {
-      for (const [f, kind] of Object.entries(fields)) {
-        if (kind !== 'date') continue;
-        store.db.prepare(`UPDATE "${t}" SET "${f}" = date("${f}", '+${shift} days') WHERE "${f}" IS NOT NULL`).run();
-      }
-    }
-    store.setSettings({ sampleAnchor: addDays(s.sampleAnchor, shift) });
+  await store.tx(async () => {
+    await store.shiftDates(shift);
+    await store.setSettings({ sampleAnchor: addDays(s.sampleAnchor, shift) }, { audit: false });
+    await store.audit({ action: 'sample', summary: `Sample dates moved ${shift} days forward` });
   });
-  store.invalidate();
   return shift;
 }
 
-export function openStore(file = DB_FILE, { seed = true } = {}) {
-  const store = new Store(file);
-  if (seed && store.isEmpty()) {
-    if (fs.existsSync(SEED_FILE)) loadSeed(store, JSON.parse(fs.readFileSync(SEED_FILE, 'utf8')));
-    else store.setSettings(DEFAULT_SETTINGS);
+/** The database (DATABASE_URL = PostgreSQL, else the SQLite file), seeded and upgraded */
+export async function openStore({ url = process.env.DATABASE_URL, file = DB_FILE, seed = true } = {}) {
+  const store = await Store.open({ url, file });
+  if (seed && (await store.isEmpty())) {
+    if (fs.existsSync(SEED_FILE)) await loadData(store, readSeed());
+    else await startEmpty(store);
   }
+  await migrate(store);
   return store;
 }
 
 // npm run reset-db: start again from the sample data (or an empty company with --empty)
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const store = new Store(DB_FILE);
+  const store = await openStore({ seed: false });
   if (process.argv.includes('--empty')) {
-    store.tx(() => {
-      store.wipe();
-      store.setSettings(DEFAULT_SETTINGS);
-    });
-    console.log(`Empty database: ${DB_FILE}`);
+    await startEmpty(store);
+    console.log('Empty company started');
   } else {
-    loadSeed(store, JSON.parse(fs.readFileSync(SEED_FILE, 'utf8')));
-    const shift = rollForward(store);
-    console.log(`Sample data loaded into ${DB_FILE}${shift ? ` (dates moved ${shift} days forward)` : ''}`);
+    await loadData(store, readSeed());
+    const shift = await rollForward(store);
+    console.log(`Sample data loaded${shift ? ` (dates moved ${shift} days forward)` : ''}`);
   }
-  store.close();
+  console.log(`Database: ${process.env.DATABASE_URL ? 'PostgreSQL (DATABASE_URL)' : DB_FILE}`);
+  await store.close();
 }

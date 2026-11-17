@@ -28,6 +28,8 @@ function fixture() {
     ],
     customers: [], suppliers: [], employees: [], timeEntries: [], operations: [], moneyEntries: [],
     orders: [], orderLines: [],
+    // the stock ledger: opening stock
+    stockMoves: [[1, 10], [2, 3], [3, 4], [4, 1]].map(([itemId, qty], i) => ({ id: i + 1, itemId, qty, type: 'opening' })),
   };
 }
 
@@ -61,24 +63,31 @@ test('statuses: Low, Expiring, OK', () => {
   assert.equal(C.byId.get(3).status, 'Expiring'); // perishable, expires within 30 days
 });
 
-test('stock moves: received PO in, done WO made in / materials out, shipped invoice out', () => {
+test('on hand is the stock ledger; open purchase orders count what is still to come', () => {
   const D = fixture();
+  D.stockMoves.push(
+    { id: 10, itemId: 2, qty: 10, type: 'receipt' },
+    { id: 11, itemId: 4, qty: 2, type: 'production' },
+    { id: 12, itemId: 1, qty: -2, type: 'issue' },
+    { id: 13, itemId: 4, qty: -1, type: 'shipment' },
+  );
   D.orders.push(
-    { id: 1, orderNo: 'PO-1001', type: 'Purchase Order', party: 'Boxes Ltd', status: 'Received', dueDate: '2026-11-10' },
-    { id: 2, orderNo: 'WO-1001', type: 'Work Order', party: 'PC', qty: 2, status: 'Done', orderDate: '2026-11-10' },
-    { id: 3, orderNo: 'INV-1001', type: 'Invoice', party: 'Acme', status: 'Unpaid', orderDate: '2026-11-12' },
-    { id: 4, orderNo: 'INV-1002', type: 'Invoice', party: 'Acme', status: 'Ordered', orderDate: '2026-11-12' },
+    { id: 1, orderNo: 'PO-1001', type: 'Purchase Order', party: 'Boxes Ltd', status: 'Part received', dueDate: '2026-11-20' },
+    { id: 2, orderNo: 'PO-1002', type: 'Purchase Order', party: 'Boxes Ltd', status: 'Cancelled', dueDate: '2026-11-20' },
+    { id: 3, orderNo: 'INV-1002', type: 'Invoice', party: 'Acme', status: 'Ordered', orderDate: '2026-11-12' },
+    { id: 4, orderNo: 'INV-1003', type: 'Invoice', party: 'Acme', status: 'Cancelled', orderDate: '2026-11-12' },
   );
   D.orderLines.push(
-    { id: 1, orderId: 1, item: 'Case', qty: 10, price: 50 },
-    { id: 2, orderId: 3, item: 'PC', qty: 1, price: 999 },
-    { id: 3, orderId: 4, item: 'PC', qty: 5, price: 999 }, // not shipped: stays
+    { id: 1, orderId: 1, item: 'Case', qty: 10, delivered: 4, price: 50 },
+    { id: 2, orderId: 2, item: 'Case', qty: 99, delivered: 0, price: 50 },
+    { id: 3, orderId: 3, item: 'PC', qty: 5, price: 999 },
   );
   const C = recalc(D, '2026-11-17');
-  assert.equal(C.byId.get(2).onHand, 3 + 10 - 2);
-  assert.equal(C.byId.get(1).onHand, 10 - 2);
-  assert.equal(C.byId.get(4).onHand, 1 + 2 - 1);
-  assert.equal(C.kpis.open, 1);
+  assert.equal(C.byId.get(2).onHand, 13);
+  assert.equal(C.byId.get(2).openPO, 6); // 10 ordered - 4 received; the cancelled PO brings nothing
+  assert.equal(C.byId.get(1).onHand, 8);
+  assert.equal(C.byId.get(4).onHand, 2);
+  assert.equal(C.kpis.open, 1); // the cancelled invoice is no open order
 });
 
 test('open work orders: waiting for material, to order and Short', () => {
@@ -120,6 +129,7 @@ test('order totals use the tax the order was made with; payments decide pay stat
   D.moneyEntries.push({ id: 1, direction: 'In', reference: 'INV-1001', amount: 100 });
   assert.equal(payStatus(D, D.orders[0]), 'Part paid');
   D.moneyEntries.push({ id: 2, direction: 'In', reference: 'INV-1001', amount: 110.53 });
+  D.moneyEntries.push({ id: 3, direction: 'In', reference: 'INV-1001', amount: 500, void: true }); // void: not counted
   t = orderTotals(D, D.orders[0]);
   assert.equal(t.balance, 0);
   assert.equal(payStatus(D, D.orders[0]), 'Paid');

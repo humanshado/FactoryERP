@@ -14,13 +14,15 @@ import {
 
 export const ORDER_TYPES = ['Quote', 'Invoice', 'Work Order', 'Purchase Order'];
 export const STATUSES = {
-  Quote: ['Open', 'Accepted', 'Lost', 'Expired'],
-  Invoice: ['Ordered', 'In production', 'Unpaid', 'Part paid', 'Paid'],
-  'Work Order': ['Planned', 'Released', 'In progress', 'Done'],
-  'Purchase Order': ['On order', 'Received'],
+  Quote: ['Open', 'Accepted', 'Lost', 'Expired', 'Cancelled'],
+  Invoice: ['Ordered', 'In production', 'Part shipped', 'Unpaid', 'Part paid', 'Paid', 'Cancelled'],
+  'Work Order': ['Planned', 'Released', 'In progress', 'Done', 'Cancelled'],
+  'Purchase Order': ['On order', 'Part received', 'Received', 'Cancelled'],
 };
+/** The first status of a new order: an order still in it, with nothing posted, can be deleted */
+export const FIRST_STATUS = { Quote: 'Open', Invoice: 'Ordered', 'Work Order': 'Planned', 'Purchase Order': 'On order' };
 export const PREFIX = { Quote: 'Q-', Invoice: 'INV-', 'Work Order': 'WO-', 'Purchase Order': 'PO-' };
-export const LOCKED_STATUSES = ['Accepted', 'Lost', 'Unpaid', 'Part paid', 'Paid', 'Received'];
+export const LOCKED_STATUSES = ['Accepted', 'Lost', 'Unpaid', 'Part paid', 'Paid', 'Received', 'Part received', 'Part shipped', 'Cancelled'];
 const EPS = 1e-9;
 
 export const n = (v) => {
@@ -37,6 +39,12 @@ export const ceil = (q) => Math.ceil(q - EPS);
 
 /** An invoice is shipped once it is Unpaid / Part paid / Paid (Ordered / In production = an open order) */
 export const isShipped = (status) => status === 'Unpaid' || status === 'Part paid' || status === 'Paid';
+/** An open customer order: not shipped in full, not cancelled */
+export const isOpenInvoice = (o) => o.type === 'Invoice' && !isShipped(o.status) && o.status !== 'Cancelled';
+/** An open work order: not done, not cancelled */
+export const isOpenWO = (o) => o.type === 'Work Order' && o.status !== 'Done' && o.status !== 'Cancelled';
+/** Quantity of a line still to receive (PO) or ship (invoice) */
+export const openQty = (l) => Math.max(0, n(l.qty) - n(l.delivered));
 
 export const isLocked = (order) => order && (order.type === 'Work Order' || LOCKED_STATUSES.includes(order.status));
 
@@ -77,7 +85,7 @@ export function orderTotals(D, order) {
 export function paidSoFar(D, order) {
   if (order.type !== 'Invoice' && order.type !== 'Purchase Order') return 0;
   const dir = order.type === 'Purchase Order' ? 'Out' : 'In';
-  return r2(D.moneyEntries.filter((m) => m.direction === dir && m.reference === order.orderNo).reduce((s, m) => s + n(m.amount), 0));
+  return r2(D.moneyEntries.filter((m) => !m.void && m.direction === dir && m.reference === order.orderNo).reduce((s, m) => s + n(m.amount), 0));
 }
 
 export function payStatus(D, order) {
@@ -98,7 +106,7 @@ export function recalc(D, today) {
 
   const items = D.items.map((it) => ({
     id: it.id, name: String(it.name || '').trim(), type: it.type || '', unit: it.unit || '', supplier: it.supplier || '',
-    expiryDate: it.expiryDate, unitCost: n(it.unitCost), reorder: n(it.reorderPoint), onHand: n(it.openingStock),
+    expiryDate: it.expiryDate, unitCost: n(it.unitCost), reorder: n(it.reorderPoint), onHand: 0,
     cost: 0, status: '', toOrder: 0, avail: 0, openPO: 0, matCost: 0, labourHours: 0,
     req: new Array(nw + 1).fill(0), rec: new Array(nw + 1).fill(0),
   }));
@@ -109,6 +117,11 @@ export function recalc(D, today) {
     byId.set(it.id, it);
   }
   const itemByName = (nm) => byName.get(String(nm || '').trim().toLowerCase());
+  // on hand = the stock ledger
+  for (const m of D.stockMoves || []) {
+    const it = byId.get(m.itemId);
+    if (it) it.onHand += n(m.qty);
+  }
 
   // BOM by product, materials cost per unit
   const bomOf = new Map();
@@ -140,42 +153,27 @@ export function recalc(D, today) {
     ordById.set(o.id, { ...o, status });
   }
 
-  // Order lines: received POs = in stock, open POs = coming, shipped invoices = gone; every order's subtotal
+  // Order lines: what open POs still bring in (by expected week); every order's subtotal
   const subtotal = new Map();
   for (const l of D.orderLines) {
-    const q = n(l.qty);
-    subtotal.set(l.orderId, (subtotal.get(l.orderId) || 0) + q * n(l.price));
+    subtotal.set(l.orderId, (subtotal.get(l.orderId) || 0) + n(l.qty) * n(l.price));
     const o = ordById.get(l.orderId);
     const it = itemByName(l.item);
-    if (!o || !it) continue;
-    if (o.type === 'Purchase Order') {
-      if (o.status === 'Received') it.onHand += q;
-      else {
-        it.openPO += q;
-        if (isDate(o.dueDate)) {
-          const k = planWeek(o.dueDate, w0);
-          if (k <= nw) it.rec[k] += q;
-        }
-      }
-    } else if (o.type === 'Invoice' && isShipped(o.status)) {
-      it.onHand -= q;
+    if (!o || !it || o.type !== 'Purchase Order' || o.status === 'Received' || o.status === 'Cancelled') continue;
+    const q = openQty(l);
+    if (!q) continue;
+    it.openPO += q;
+    if (isDate(o.dueDate)) {
+      const k = planWeek(o.dueDate, w0);
+      if (k <= nw) it.rec[k] += q;
     }
   }
-
-  // Work orders done: made in, materials out
   const wos = [...ordById.values()].filter((o) => o.type === 'Work Order');
-  for (const wo of wos) {
-    const prod = itemByName(wo.party);
-    if (wo.status !== 'Done' || !prod) continue;
-    const q = n(wo.qty);
-    prod.onHand += q;
-    for (const b of bomOf.get(prod.id) || []) b.mat.onHand -= b.qty * q;
-  }
 
   // Waiting for material + planning requirements (work in progress takes its materials first)
   for (const it of items) it.avail = it.onHand;
   const wait = {};
-  const open = wos.filter((wo) => wo.status !== 'Done' && itemByName(wo.party));
+  const open = wos.filter((wo) => isOpenWO(wo) && itemByName(wo.party));
   open.sort((a, b) => {
     const ka = a.status === 'In progress' ? 0 : 1;
     const kb = b.status === 'In progress' ? 0 : 1;
@@ -247,7 +245,7 @@ export function recalc(D, today) {
   let cogs = 0;
   const salesInv = new Set();
   for (const o of ordById.values()) {
-    if (o.type !== 'Invoice') continue;
+    if (o.type !== 'Invoice' || o.status === 'Cancelled') continue;
     const sb = r2(subtotal.get(o.id) || 0);
     if (!isShipped(o.status)) {
       nOpenSO++;
@@ -296,7 +294,7 @@ export function stockRows(C) {
 // ---------------------------------------------------------------- relations between orders
 /** Work orders of an invoice: From = its number, or the quote it was made from */
 export function invoiceWorkOrders(D, inv) {
-  return D.orders.filter((o) => o.type === 'Work Order' && o.fromNo && (o.fromNo === inv.orderNo || (inv.fromNo && o.fromNo === inv.fromNo)));
+  return D.orders.filter((o) => o.type === 'Work Order' && o.status !== 'Cancelled' && o.fromNo && (o.fromNo === inv.orderNo || (inv.fromNo && o.fromNo === inv.fromNo)));
 }
 
 /** The invoice a work order is for: its From is the invoice number, or the quote the invoice was made from */
@@ -304,7 +302,7 @@ export function invoiceOfWO(D, wo) {
   if (!wo.fromNo) return null;
   const direct = D.orders.find((o) => o.orderNo === wo.fromNo);
   if (direct && direct.type === 'Invoice') return direct;
-  return D.orders.find((o) => o.type === 'Invoice' && o.fromNo === wo.fromNo) || null;
+  return D.orders.find((o) => o.type === 'Invoice' && o.status !== 'Cancelled' && o.fromNo === wo.fromNo) || null;
 }
 
 // ---------------------------------------------------------------- PIPELINE: order to cash
@@ -315,7 +313,7 @@ export function pipeline(D, C) {
   const paidDays = n(D.settings.pipelinePaidDays) >= 1 ? n(D.settings.pipelinePaidDays) : 30;
   const woByFrom = new Map();
   for (const o of D.orders) {
-    if (o.type !== 'Work Order' || !o.fromNo) continue;
+    if (o.type !== 'Work Order' || !o.fromNo || o.status === 'Cancelled') continue;
     if (!woByFrom.has(o.fromNo)) woByFrom.set(o.fromNo, []);
     woByFrom.get(o.fromNo).push(o);
   }
@@ -331,7 +329,7 @@ export function pipeline(D, C) {
         k = 0;
         next = 'Make the invoice';
       }
-    } else if (o.type === 'Invoice') {
+    } else if (o.type === 'Invoice' && o.status !== 'Cancelled') {
       if (!isShipped(o.status)) {
         const list = [...(woByFrom.get(o.orderNo) || []), ...(o.fromNo ? woByFrom.get(o.fromNo) || [] : [])];
         const nAll = list.length;
@@ -343,15 +341,15 @@ export function pipeline(D, C) {
           for (const m of C.wait[w.id].split(', ')) if (!waits.includes(m)) waits.push(m);
         }
         if (nAll === 0) {
-          k = 1;
-          next = `Make the work orders (from ${o.fromNo || 'New'})`;
+          k = o.status === 'Part shipped' ? 4 : 1;
+          next = o.status === 'Part shipped' ? 'Ship the rest' : `Make the work orders (from ${o.fromNo || 'New'})`;
         } else if (waits.length) {
           k = 2;
           next = `Waiting for ${waits.join(', ')}`;
           if (next.length > 40) next = `Waiting for ${waits.length} materials (${waits[0]} +${waits.length - 1})`;
         } else if (nDone === nAll) {
           k = 4;
-          next = 'Ship it (status Unpaid)';
+          next = o.status === 'Part shipped' ? 'Ship the rest' : 'Ship it (status Unpaid)';
         } else if (nGo > 0 || nDone > 0) {
           k = 3;
           next = `${nDone} of ${nAll} work order${nAll === 1 ? '' : 's'} done`;
@@ -390,7 +388,7 @@ export function planning(D, C) {
     if (wo.type !== 'Work Order') continue;
     woStat.set(wo.id, wo.status);
     const prod = C.itemByName(wo.party);
-    if (wo.status === 'Done' || !prod || !isDate(wo.orderDate)) continue;
+    if (!isOpenWO(wo) || !prod || !isDate(wo.orderDate)) continue;
     const k = planWeek(wo.orderDate, w0);
     if (k > nw) continue;
     if (!pq.has(prod.id)) pq.set(prod.id, new Array(nw + 1).fill(0));
@@ -398,7 +396,7 @@ export function planning(D, C) {
   }
   for (const op of D.operations) {
     const st = woStat.get(op.orderId);
-    if (!st || st === 'Done' || op.done || !load.has(op.workCenter) || !isDate(op.opStart)) continue;
+    if (!st || st === 'Done' || st === 'Cancelled' || op.done || !load.has(op.workCenter) || !isDate(op.opStart)) continue;
     const days = Math.max(1, Math.round(n(op.days)));
     for (let i = 0; i < days; i++) {
       const d = addWorkdays(op.opStart, i);
@@ -465,7 +463,7 @@ export const BOARD_DAYS = 10;
 export function board(D, C, weekStart) {
   const w0 = monday(weekStart || C.today);
   const days = Array.from({ length: BOARD_DAYS }, (_, i) => addWorkdays(w0, i));
-  const wos = new Map(D.orders.filter((o) => o.type === 'Work Order').map((o) => [o.id, o]));
+  const wos = new Map(D.orders.filter((o) => o.type === 'Work Order' && o.status !== 'Cancelled').map((o) => [o.id, o]));
   const lanes = (D.settings.workCenters || []).map((wc) => ({ name: wc.name, hoursPerDay: n(wc.hoursPerDay), bars: [], load: new Array(BOARD_DAYS).fill(0) }));
   const laneOf = new Map(lanes.map((l) => [l.name, l]));
   for (const op of D.operations) {
@@ -512,11 +510,12 @@ export function board(D, C, weekStart) {
 export function profitAndLoss(D, today, months = 6) {
   const cols = Array.from({ length: months }, (_, i) => addMonths(today, i - (months - 1)));
   const cats = D.settings.moneyCategories || [];
-  const sum = (dir, cat, m) => D.moneyEntries
+  const live = D.moneyEntries.filter((e) => !e.void);
+  const sum = (dir, cat, m) => live
     .filter((e) => e.direction === dir && e.category === cat && isDate(e.entryDate) && e.entryDate >= m && e.entryDate < addMonths(m, 1))
     .reduce((s, e) => s + n(e.amount), 0);
   const known = new Set(cats.map((c) => c.name));
-  const other = (dir, m) => D.moneyEntries
+  const other = (dir, m) => live
     .filter((e) => e.direction === dir && !known.has(e.category) && isDate(e.entryDate) && e.entryDate >= m && e.entryDate < addMonths(m, 1))
     .reduce((s, e) => s + n(e.amount), 0);
   const section = (dir) => {
@@ -576,7 +575,7 @@ export function monthlyHours(D, month) {
 export function monthSummary(D, today) {
   const m0 = monthStart(today);
   const m1 = addMonths(m0, 1);
-  const inMonth = D.moneyEntries.filter((e) => isDate(e.entryDate) && e.entryDate >= m0 && e.entryDate < m1);
+  const inMonth = D.moneyEntries.filter((e) => !e.void && isDate(e.entryDate) && e.entryDate >= m0 && e.entryDate < m1);
   const moneyIn = inMonth.filter((e) => e.direction === 'In').reduce((s, e) => s + n(e.amount), 0);
   const moneyOut = inMonth.filter((e) => e.direction === 'Out').reduce((s, e) => s + n(e.amount), 0);
   return { month: m0, moneyIn: r2(moneyIn), moneyOut: r2(moneyOut), net: r2(moneyIn - moneyOut), entries: inMonth.length };

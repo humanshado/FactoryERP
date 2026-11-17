@@ -1,0 +1,178 @@
+{
+ "kpis": {
+  "onTime": 1,
+  "onTimeSub": "9 of 9 work orders on time",
+  "open": 6,
+  "openValue": 135618,
+  "inProd": 4,
+  "inProdSub": "0 of 6 work centers busy now",
+  "short": 3,
+  "shortSub": "1 work order waits for material",
+  "stock": 94523.37,
+  "stockRaw": 84865.70000000001,
+  "stockFG": 9657.67,
+  "gm": 0.24169688655612542,
+  "sales": 67064
+ },
+ "wait": {
+  "190": "32GB RAM kit, Gaming GPU, 850W PSU"
+ },
+ "items": {
+  "1": {
+   "onHand": 84,
+   "avail": 8,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "2": {
+   "onHand": 9,
+   "avail": 3,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "3": {
+   "onHand": 64,
+   "avail": 10,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "4": {
+   "onHand": 15,
+   "avail": -19,
+   "status": "Short",
+   "toOrder": 19
+  },
+  "5": {
+   "onHand": 62,
+   "avail": 8,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "6": {
+   "onHand": 33,
+   "avail": 5,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "7": {
+   "onHand": 7,
+   "avail": -15,
+   "status": "Short",
+   "toOrder": 9
+  },
+  "8": {
+   "onHand": 8,
+   "avail": 2,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "9": {
+   "onHand": 64,
+   "avail": 10,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "10": {
+   "onHand": 42,
+   "avail": 8,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "11": {
+   "onHand": 62,
+   "avail": 8,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "12": {
+   "onHand": 9,
+   "avail": -19,
+   "status": "Short",
+   "toOrder": 19
+  },
+  "13": {
+   "onHand": 92,
+   "avail": 10,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "14": {
+   "onHand": 13,
+   "avail": 4.8,
+   "status": "Expiring",
+   "toOrder": 0
+  },
+  "15": {
+   "onHand": 72,
+   "avail": 8,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "16": {
+   "onHand": 22,
+   "avail": 4,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "17": {
+   "onHand": 56,
+   "avail": 10,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "18": {
+   "onHand": 97,
+   "avail": 15,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "19": {
+   "onHand": 92,
+   "avail": 10,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "20": {
+   "onHand": 79,
+   "avail": 15,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "21": {
+   "onHand": 26,
+   "avail": 8,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "22": {
+   "onHand": 84,
+   "avail": 20,
+   "status": "OK",
+   "toOrder": 0
+  },
+  "23": {
+   "onHand": 3,
+   "avail": 3,
+   "status": "Made",
+   "toOrder": 0
+  },
+  "24": {
+   "onHand": 2,
+   "avail": 2,
+   "status": "Made",
+   "toOrder": 0
+  },
+  "25": {
+   "onHand": 0,
+   "avail": 0,
+   "status": "Made",
+   "toOrder": 0
+  },
+  "26": {
+   "onHand": 4,
+   "avail": 4,
+   "status": "Made",
+   "toOrder": 0
+  }
+ }
+}

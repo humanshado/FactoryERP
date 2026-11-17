@@ -81,25 +81,41 @@ const confirmStore = createStore(null);
 export function askConfirm(text, { ok = 'Yes', cancel = 'No', danger = false } = {}) {
   return new Promise((resolve) => confirmStore.set({ text, ok, cancel, danger, resolve }));
 }
+/** Ask for a line of text (a reason). Resolves to the text, or null when cancelled. */
+export function askText(text, { ok = 'OK', cancel = 'Cancel', danger = false, placeholder = '', required = false, options = null } = {}) {
+  return new Promise((resolve) => confirmStore.set({ text, ok, cancel, danger, resolve, input: { placeholder, required, options } }));
+}
 export function ConfirmHost() {
   const c = useSyncExternalStore(confirmStore.subscribe, confirmStore.get);
   const okRef = useRef(null);
+  const inRef = useRef(null);
+  const [val, setVal] = useState('');
   useEffect(() => {
-    if (c) okRef.current?.focus();
+    if (!c) return;
+    setVal(c.input?.options?.[0] || '');
+    setTimeout(() => (c.input ? inRef.current?.focus() : okRef.current?.focus()), 0);
   }, [c]);
   if (!c) return null;
   const done = (v) => {
     confirmStore.set(null);
-    c.resolve(v);
+    c.resolve(c.input ? (v ? val.trim() : null) : v);
   };
   return (
     <div className="modal-back" onMouseDown={() => done(false)}>
       <div className="modal" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.key === 'Escape' && done(false)}>
         <p>{c.text}</p>
+        {c.input && (c.input.options ? (
+          <select ref={inRef} value={val} onChange={(e) => setVal(e.target.value)} className="modal-input">
+            {c.input.options.map((o) => <option key={o}>{o}</option>)}
+          </select>
+        ) : (
+          <input ref={inRef} className="modal-input" value={val} placeholder={c.input.placeholder} onChange={(e) => setVal(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && (!c.input.required || val.trim()) && done(true)} />
+        ))}
         <div className="modal-actions">
           <button className="btn" onClick={() => done(false)}>{c.cancel}</button>
-          <button ref={okRef} className={`btn ${c.danger ? 'btn-danger' : 'btn-primary'}`} onClick={() => done(true)}>{c.ok}</button>
+          <button ref={okRef} className={`btn ${c.danger ? 'btn-danger' : 'btn-primary'}`} disabled={!!c.input?.required && !val.trim()} onClick={() => done(true)}>{c.ok}</button>
         </div>
       </div>
     </div>
@@ -109,6 +125,10 @@ export function ConfirmHost() {
 // ---------------------------------------------------------------- data
 /** Load a URL; reload() fetches again. Reloads on the global "changed" signal too. */
 const changed = createStore(0);
+let unauthorized = () => {};
+export const setDataUnauthorized = (fn) => {
+  unauthorized = fn;
+};
 export const signalChange = () => changed.set((x) => x + 1);
 export function useData(url) {
   const [data, setData] = useState(null);
@@ -117,8 +137,9 @@ export function useData(url) {
   const reload = useCallback(async () => {
     if (!url) return;
     try {
-      const r = await fetch(`/api${url}`);
+      const r = await fetch(`/api${url}`, { credentials: 'same-origin' });
       const j = await r.json();
+      if (r.status === 401) unauthorized();
       if (!r.ok) throw new Error(j.error || r.statusText);
       setData(j);
       setError(null);
@@ -335,4 +356,65 @@ export function Stat({ label, value }) {
 export function initials(name) {
   const p = String(name || '').trim().split(/\s+/);
   return ((p[0]?.[0] || '+') + (p[1]?.[0] || '')).toUpperCase();
+}
+
+// ---------------------------------------------------------------- modal dialog
+export function Modal({ title, children, onClose, wide }) {
+  useEffect(() => {
+    const k = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [onClose]);
+  return (
+    <div className="modal-back" onMouseDown={onClose}>
+      <div className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-head"><h2>{title}</h2><button className="icon-btn" onClick={onClose} aria-label="Close">✕</button></div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const ACTION_LABEL = {
+  create: 'created', update: 'changed', delete: 'deleted', cancel: 'cancelled', receive: 'received', ship: 'shipped', payment: 'payment',
+  release: 'released', start: 'started', complete: 'completed', schedule: 'scheduled', 'make-invoice': 'made invoice', 'make-work-orders': 'made work orders',
+  adjust: 'stock adjusted', login: 'signed in', 'login-failed': 'failed sign-in', setup: 'set up', load: 'data loaded', backup: 'backup', migrate: 'migrated', sample: 'sample dates',
+};
+export const actionLabel = (a) => ACTION_LABEL[a] || a;
+export function fmtStamp(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+const showVal = (v) => (v === null || v === undefined || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+
+export function Changes({ changes }) {
+  if (!changes) return null;
+  return (
+    <ul className="changes">
+      {Object.entries(changes).map(([k, [a, b]]) => (
+        <li key={k}><b>{k}</b>: <span className="old">{showVal(a)}</span> → <span className="new">{showVal(b)}</span></li>
+      ))}
+    </ul>
+  );
+}
+
+/** The audit trail of one record */
+export function History({ table, id }) {
+  const [rows] = useData(`/audit?table=${table}&recordId=${id}&limit=50`);
+  return (
+    <Card title="History" pad={false}>
+      <div className="history">
+        {!rows && <div className="muted pad">Loading…</div>}
+        {rows && !rows.length && <div className="muted pad">No changes recorded yet.</div>}
+        {rows?.map((a) => (
+          <div key={a.id} className="history-row">
+            <div><b>{a.userName}</b> <span className="muted">{actionLabel(a.action)} · {fmtStamp(a.at)}</span></div>
+            {a.action !== 'update' && a.action !== 'create' && <div className="small">{a.summary}</div>}
+            {a.action === 'update' && <Changes changes={a.changes} />}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
 }

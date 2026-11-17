@@ -25,7 +25,8 @@ export function KpiStrip({ k }) {
 }
 
 export default function Floor() {
-  const { today } = useApp();
+  const { today, can } = useApp();
+  const movable = can('workorders.edit');
   const [params, setParams] = useSearchParams();
   const week = params.get('week') || monday(today);
   const [data, , error] = useData(`/floor?week=${week}`);
@@ -85,7 +86,7 @@ export default function Floor() {
                       <button key={b.opId} type="button"
                         className={`bar bar-${b.color} ${sel === b.opId ? 'sel' : ''} ${b.start < 0 ? 'cut-l' : ''} ${b.start + b.span > B.days.length ? 'cut-r' : ''}`}
                         style={{ gridColumn: `${s + 1} / ${e + 2}`, gridRow: b.row + 1 }}
-                        draggable={!b.done}
+                        draggable={movable && !b.done}
                         title={`${b.woNo} · ${b.product} × ${fmtNum(b.qty)} · ${fmtNum(b.hours)} h${b.waitingFor ? ` · waiting for ${b.waitingFor}` : ''}`}
                         onClick={() => setSel(b.opId)}
                         onDragStart={(ev) => {
@@ -110,7 +111,7 @@ export default function Floor() {
           </div>
           <div className="legend">
             {LEGEND.map(([k, l]) => <span key={k}><i className={`dot bar-${k}`} />{l}</span>)}
-            <span className="muted">· drag a bar to move it · hours under each day = load (red = over the work center's hours)</span>
+            <span className="muted">{movable ? '· drag a bar to move it ' : ''}· hours under each day = load (red = over the work center's hours)</span>
           </div>
         </Card>
 
@@ -127,7 +128,7 @@ export default function Floor() {
                 {selBar.waitingFor && (<><dt>Waiting for</dt><dd className="bad">{selBar.waitingFor}</dd></>)}
                 <dt>Done</dt><dd>{selBar.done ? 'Yes' : 'No'}</dd>
               </dl>
-              {!selBar.done && (
+              {movable && !selBar.done && (
                 <div className="btn-row">
                   <button className="btn" onClick={() => move(selBar, selBar.start - 1)}>◀ 1 day earlier</button>
                   <button className="btn" onClick={() => move(selBar, selBar.start + 1)}>1 day later ▶</button>

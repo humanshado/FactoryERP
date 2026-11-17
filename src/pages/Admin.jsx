@@ -50,7 +50,8 @@ function ListBox({ title, values, onChange, hint }) {
 }
 
 export default function Admin() {
-  const { settings, reload } = useApp();
+  const { settings, reload, can, database } = useApp();
+  const editable = can('settings.edit');
   const [s, setS] = useState(null);
   useEffect(() => {
     setS({ ...settings, workCenters: (settings.workCenters || []).map((w) => ({ ...w, _orig: w.name })) });
@@ -58,7 +59,7 @@ export default function Admin() {
   if (!s) return null;
   const dirty = JSON.stringify(s.workCenters.map(({ _orig, ...w }) => w)) !== JSON.stringify(settings.workCenters)
     || SETTINGS_FIELDS.some((f) => s[f.key] !== settings[f.key])
-    || ['itemCategories', 'units', 'payMethods', 'itemTypes', 'roles', 'moneyCategories'].some((k) => JSON.stringify(s[k]) !== JSON.stringify(settings[k]));
+    || ['itemCategories', 'units', 'payMethods', 'itemTypes', 'roles', 'moneyCategories', 'adjustReasons'].some((k) => JSON.stringify(s[k]) !== JSON.stringify(settings[k]));
 
   const save = async () => {
     const renames = { workCenters: {} };
@@ -107,12 +108,12 @@ export default function Admin() {
   return (
     <div className="page">
       <PageHead title="Admin" sub="Settings and lists · change them here, every drop-down follows">
-        <button className="btn btn-primary" disabled={!dirty} onClick={save}>Save settings</button>
+        {editable ? <button className="btn btn-primary" disabled={!dirty} onClick={save}>Save settings</button> : <span className="muted">Read only: only an administrator changes settings.</span>}
       </PageHead>
       <div className="grid-2">
-        <Card title="Settings"><Form fields={SETTINGS_FIELDS} value={s} onChange={setS} /></Card>
+        <Card title="Settings"><fieldset className="plain" disabled={!editable}><Form fields={SETTINGS_FIELDS} value={s} onChange={setS} /></fieldset></Card>
         <div className="stack">
-          <Card title="Work centers" pad={false}>
+          <Card title="Work centers" pad={false} className={editable ? '' : 'ro'}>
             <div className="lines">
             <table className="table lines-table">
               <thead><tr><th>Work center</th><th className="num">Hours per day</th><th /></tr></thead>
@@ -130,23 +131,25 @@ export default function Admin() {
             <div className="add-row pad"><button className="btn btn-small" onClick={() => setS({ ...s, workCenters: [...s.workCenters, { name: '', hoursPerDay: 8 }] })}>+ Add work center</button></div>
             <p className="note">Hours per day = the capacity of the work center (8 = one shift; 16 = two people or two shifts). A rename follows into routings, operations and people.</p>
           </Card>
-          <Card title="Data">
+          {can('data.manage') && <Card title="Data">
             <div className="btn-col">
               <a className="btn" href="/api/backup" download>Download a backup (JSON)</a>
               <label className="btn">Restore a backup… <input type="file" accept="application/json,.json" hidden onChange={restore} /></label>
               <button className="btn" onClick={() => reset('sample')}>Load the sample data</button>
               <button className="btn btn-ghost-danger" onClick={() => reset('empty')}>Start an empty company</button>
             </div>
+            <p className="note">Database: <b>{database === 'postgres' ? 'PostgreSQL' : 'SQLite file'}</b>. Users and the audit log are kept when data is replaced.</p>
             <p className="note">Have your own Excel workbook? <code>python3 tools/import_xlsm.py your.xlsm server/seed/sample.json</code>, then load the sample data.</p>
-          </Card>
+          </Card>}
         </div>
       </div>
-      <div className="lists">
+      <fieldset className="plain lists" disabled={!editable}>
         <ListBox title="Item types" values={s.itemTypes || []} onChange={setList('itemTypes')} hint="Finished = made here (BOM + routing). Perishable items have an expiry date." />
         <ListBox title="Item categories" values={s.itemCategories || []} onChange={setList('itemCategories')} />
         <ListBox title="Units" values={s.units || []} onChange={setList('units')} />
         <ListBox title="Pay methods" values={s.payMethods || []} onChange={setList('payMethods')} />
-        <ListBox title="Roles" values={s.roles || []} onChange={setList('roles')} />
+        <ListBox title="Job roles" values={s.roles || []} onChange={setList('roles')} hint="Job titles on People (sign-in roles are on Users)." />
+        <ListBox title="Stock adjustment reasons" values={s.adjustReasons || []} onChange={setList('adjustReasons')} />
         <Card title="Money categories" className="listbox">
           <ul>
             {(s.moneyCategories || []).map((c, i) => (
@@ -161,7 +164,7 @@ export default function Admin() {
           </ul>
           <div className="add-row"><button className="btn btn-small" onClick={() => setS({ ...s, moneyCategories: [...(s.moneyCategories || []), { name: 'New category', direction: 'Out' }] })}>+ Add category</button></div>
         </Card>
-      </div>
+      </fieldset>
     </div>
   );
 }
