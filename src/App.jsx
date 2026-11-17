@@ -1,0 +1,115 @@
+import { createContext, useContext, useEffect, useState } from 'react';
+import { NavLink, Route, Routes, useLocation } from 'react-router-dom';
+import { ConfirmHost, Loading, Toasts, setAppSettings, useData } from './ui.jsx';
+import Floor from './pages/Floor.jsx';
+import Pipeline from './pages/Pipeline.jsx';
+import Planning from './pages/Planning.jsx';
+import Orders from './pages/Orders.jsx';
+import OrderPrint from './pages/OrderPrint.jsx';
+import Stock from './pages/Stock.jsx';
+import { Customers, Suppliers } from './pages/Parties.jsx';
+import Ledger from './pages/Ledger.jsx';
+import People from './pages/People.jsx';
+import Reports from './pages/Reports.jsx';
+import Admin from './pages/Admin.jsx';
+
+const AppCtx = createContext(null);
+/** { settings, today, reload } */
+export const useApp = () => useContext(AppCtx);
+
+const NAV = [
+  { group: 'Run', items: [
+    { to: '/', label: 'Floor', icon: 'M3 21V9l6 4V9l6 4V9l6 4v8z' },
+    { to: '/pipeline', label: 'Pipeline', icon: 'M3 6h18M6 12h12M10 18h4' },
+    { to: '/planning', label: 'Planning', icon: 'M4 5h16v15H4zM4 10h16M9 5V3m6 2V3' },
+  ] },
+  { group: 'Records', items: [
+    { to: '/orders', label: 'Orders', icon: 'M6 3h9l4 4v14H6zM9 12h7M9 16h7M9 8h3' },
+    { to: '/stock', label: 'Stock', icon: 'M3 8l9-5 9 5v8l-9 5-9-5zM3 8l9 5 9-5M12 13v8' },
+    { to: '/customers', label: 'Customers', icon: 'M8 11a4 4 0 100-8 4 4 0 000 8zM2 21c0-4 3-6 6-6s6 2 6 6M16 3a4 4 0 010 8M18 15c2 .5 4 2.5 4 6' },
+    { to: '/suppliers', label: 'Suppliers', icon: 'M2 7h11v10H2zM13 10h4l4 4v3h-8zM6 20a2 2 0 100-4 2 2 0 000 4zM17 20a2 2 0 100-4 2 2 0 000 4z' },
+    { to: '/ledger', label: 'Ledger', icon: 'M12 3v18M17 7H9.5a3 3 0 000 6h5a3 3 0 010 6H6' },
+    { to: '/people', label: 'People', icon: 'M12 11a4 4 0 100-8 4 4 0 000 8zM4 21c0-4 4-7 8-7s8 3 8 7' },
+  ] },
+  { group: 'Look back', items: [
+    { to: '/reports', label: 'Reports', icon: 'M4 20V10m6 10V4m6 16v-7m4 7H2' },
+    { to: '/admin', label: 'Admin', icon: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19 12l2-1-1-3-2 .2-1.3-1.5.4-2-3-1-1 1.8h-2L10 3.7l-3 1 .4 2L6 8.2 4 8 3 11l2 1v0l-2 1 1 3 2-.2 1.3 1.5-.4 2 3 1 1-1.8h2l1 1.8 3-1-.4-2 1.4-1.5 2 .2 1-3z' },
+  ] },
+];
+
+function Icon({ d }) {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={d} />
+    </svg>
+  );
+}
+
+function Rail({ settings, open, onClose }) {
+  return (
+    <aside className={`rail ${open ? 'open' : ''}`}>
+      <div className="brand">
+        <svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)" /><path d="M6 25V13l6 4v-4l6 4v-4l6 4V7h3v18z" fill="#fff" /></svg>
+        <div>
+          <div className="brand-name">FactoryERP</div>
+          <div className="brand-co">{settings.companyName}</div>
+        </div>
+      </div>
+      <nav>
+        {NAV.map((g) => (
+          <div key={g.group} className="nav-group">
+            <div className="nav-title">{g.group}</div>
+            {g.items.map((it) => (
+              <NavLink key={it.to} to={it.to} end={it.to === '/'} className="nav-link" onClick={onClose}>
+                <Icon d={it.icon} />
+                <span>{it.label}</span>
+              </NavLink>
+            ))}
+          </div>
+        ))}
+      </nav>
+      {String(settings.sampleMode).toUpperCase() === 'YES' && <div className="sample-pill" title="Sample data: Admin > Data to start your own">SAMPLE DATA</div>}
+    </aside>
+  );
+}
+
+export default function App() {
+  const [boot, reload, error] = useData('/bootstrap');
+  const [menu, setMenu] = useState(false);
+  const loc = useLocation();
+  useEffect(() => setMenu(false), [loc.pathname]);
+  if (!boot) return <Loading error={error && `Cannot reach the FactoryERP server: ${error}`} />;
+  setAppSettings(boot.settings);
+  const printing = /\/print$/.test(loc.pathname);
+  return (
+    <AppCtx.Provider value={{ settings: boot.settings, today: boot.today, reload }}>
+      {printing ? (
+        <Routes><Route path="/orders/:id/print" element={<OrderPrint />} /></Routes>
+      ) : (
+        <div className="shell">
+          <Rail settings={boot.settings} open={menu} onClose={() => setMenu(false)} />
+          {menu && <div className="rail-back" onClick={() => setMenu(false)} />}
+          <main className="main">
+            <button className="menu-btn" onClick={() => setMenu(true)} aria-label="Open menu">☰ FactoryERP</button>
+            <Routes>
+              <Route path="/" element={<Floor />} />
+              <Route path="/pipeline" element={<Pipeline />} />
+              <Route path="/planning" element={<Planning />} />
+              <Route path="/orders" element={<Orders />} />
+              <Route path="/stock" element={<Stock />} />
+              <Route path="/customers" element={<Customers />} />
+              <Route path="/suppliers" element={<Suppliers />} />
+              <Route path="/ledger" element={<Ledger />} />
+              <Route path="/people" element={<People />} />
+              <Route path="/reports" element={<Reports />} />
+              <Route path="/admin" element={<Admin />} />
+              <Route path="*" element={<Floor />} />
+            </Routes>
+          </main>
+        </div>
+      )}
+      <Toasts />
+      <ConfirmHost />
+    </AppCtx.Provider>
+  );
+}
